@@ -8,6 +8,8 @@ import { Hotkeys, getHotKeys } from './hotkeys';
 import { Button, ButtonStateEnum } from './button';
 import { Chat } from './chat';
 import { Creature } from '../creature';
+import { isTeam } from '../utility/team';
+import type { Ability } from '../ability';
 import { Fullscreen } from './fullscreen';
 import { ProgressBar } from './progressbar';
 import { getUrl } from '../assets';
@@ -24,6 +26,7 @@ import Game from '../game';
 import { CreatureType } from '../data/types';
 import { getAvatarSet } from '../style/avatar-styles';
 import { applyBuffDebuffStyle } from './buffs-debuffs';
+import { installCardParallax } from './card-parallax';
 import { getRandomSummonCandidates, getSummonCandidates } from '../utility/summon-candidates';
 import { OpenCollectiveBanner, isThirdPartyContentBlocked } from './open-collective-banner';
 import { onPointerUp } from '../input/input';
@@ -615,6 +618,7 @@ export class UI {
 		);
 		this.$display = $j('#ui');
 		this.$dash = $j('#dash');
+		installCardParallax(this.$dash.find('#card')[0]);
 		this.$grid = $j(this.makeCreatureGrid(document.getElementById('creaturerasterwrapper')));
 		this.$activebox = $j('#activebox');
 		this.$scoreboard = $j('#scoreboard');
@@ -1136,6 +1140,7 @@ export class UI {
 									hex.display.setOrigin(0.5, 0.5);
 								});
 							}
+							this.showViableTargets(ab);
 						}
 
 						(function () {
@@ -1155,6 +1160,7 @@ export class UI {
 						if (this.hoveredAbilityIndex === i) {
 							this.hoveredAbilityIndex = -1;
 						}
+						this.clearViableTargets();
 						if (this.selectedAbility == -1) {
 							this.hideAbilityCosts();
 						}
@@ -1852,6 +1858,59 @@ export class UI {
 				this.healthBar.previewSize(0);
 			}
 		}
+	}
+
+	/** Units dimmed by {@link showViableTargets}, to restore on leaving the button. */
+	private dimmedNonTargets: Creature[] = [];
+
+	/**
+	 * Emphasis on viable targets (#1636): while hovering a usable ability, units
+	 * it can't target from where the active unit stands fade out, cardboards and
+	 * queue avatars alike, so the ones it can reach stand out.
+	 *
+	 * Viable means standing on the ability's range hexes and, when the ability
+	 * declares a target team, belonging to it.
+	 */
+	showViableTargets(ability: Ability) {
+		this.clearViableTargets();
+		const caster = this.game.activeCreature;
+		const range = ability?._abilityRangeHexes;
+		if (!caster || !range?.length || !ability.require?.()) {
+			return;
+		}
+
+		const targetTeam = (ability as Ability & { _targetTeam?: Parameters<typeof isTeam>[2] })
+			._targetTeam;
+		const inRange = new Set(range);
+		const isViable = (creature: Creature) =>
+			creature.hexagons.some((hex) => inRange.has(hex)) &&
+			(targetTeam === undefined || isTeam(caster, creature, targetTeam));
+
+		this.dimmedNonTargets = this.game.creatures.filter(
+			(creature): creature is Creature =>
+				creature instanceof Creature &&
+				creature !== caster &&
+				!creature.dead &&
+				!creature.temp &&
+				!isViable(creature),
+		);
+		// Nothing to emphasize when no unit at all is a target
+		if (this.dimmedNonTargets.length === this.game.creatures.filter(Boolean).length - 1) {
+			this.dimmedNonTargets = [];
+			return;
+		}
+		this.dimmedNonTargets.forEach((creature) => creature.creatureSprite.setAlpha(0.35, 150));
+		this.queue.dimCreatures(this.dimmedNonTargets.map((creature) => creature.id));
+	}
+
+	clearViableTargets() {
+		this.dimmedNonTargets.forEach((creature) => {
+			if (!creature.dead) {
+				creature.creatureSprite.setAlpha(1, 150);
+			}
+		});
+		this.dimmedNonTargets = [];
+		this.queue?.dimCreatures(null);
 	}
 
 	hideAbilityCosts() {
